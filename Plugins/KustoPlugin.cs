@@ -22,25 +22,34 @@ public class KustoPlugin
 
     private ICslQueryProvider KustoClient { get; set; }
 
-    [KernelFunction, Description("Get table MyTable schema")]
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1024:Use properties where appropriate", Justification = "Too smart")]
-    public string GetTableSchema()
-    {
-        var response = KustoClient.ExecuteQuery("PhoenixData", @"materialized_view('LatestDeviceInfoProfilesView') | getschema", null);
-        using TextWriter stringWriter = new StringWriter();
-        response.WriteAsCsv(true, stringWriter);
-        return stringWriter.ToString()!;
-    }
+    // [KernelFunction, Description("Get table MyTable schema")]
+    // [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1024:Use properties where appropriate", Justification = "Too smart")]
+    // public string GetTableSchema()
+    // {
+    //     var response = KustoClient.ExecuteQuery("PhoenixData", @"materialized_view('LatestDeviceInfoProfilesView') | getschema", null);
+    //     using TextWriter stringWriter = new StringWriter();
+    //     response.WriteAsCsv(true, stringWriter);
+    //     return stringWriter.ToString()!;
+    // }
 
-    [KernelFunction, Description("Run aribtrary KQL queries on MyTable")]
+    [KernelFunction, Description("Run aribtrary KQL queries on MyTable, returns a CSV of the results or an error string")]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1024:Use properties where appropriate", Justification = "Too smart")]
     public string RunQuery(
         [Description("The KQL query to run.")]
         string query)
     {
-        var response = KustoClient.ExecuteQuery("PhoenixData", query, null);
-        using TextWriter stringWriter = new StringWriter();
-        response.WriteAsCsv(true, stringWriter);
-        return stringWriter.ToString()!;
+        query = query.Replace("MyTable", "materialized_view('LatestDeviceInfoProfilesView')");
+        Console.WriteLine($"Running query: {query}");
+        try
+        {
+            var response = KustoClient.ExecuteQuery("PhoenixData", query, null);
+            using TextWriter stringWriter = new StringWriter();
+            response.WriteAsCsv(true, stringWriter);
+            return stringWriter.ToString()!;
+        }
+        catch (Exception e)
+        {
+            return e.Message;
+        }
     }
 }
