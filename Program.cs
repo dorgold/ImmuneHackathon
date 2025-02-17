@@ -8,6 +8,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel.ChatCompletion;
 using SemanticKernelExamples;
 using System.Net.Http;
+using Microsoft.SemanticKernel.Agents;
+using OpenAI.Assistants;
 
 namespace SemanticKernelSample
 {
@@ -15,74 +17,36 @@ namespace SemanticKernelSample
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("Select a step to run:");
-            Console.WriteLine("1: Run Step1_Create_Kernel example (using AppConfiguration)");
-            Console.WriteLine("2: Run Step2_Add_Plugins example (using AppConfiguration)");
-            Console.WriteLine("3: Run Step3_Chat_Prompt example (using AppConfiguration)");
-            Console.WriteLine("3b: Run Step3_User_Interaction_Chat_Prompt example (using AppConfiguration)");
-            Console.WriteLine("4: Run Step4_Chat_Agent example (using AppConfiguration)");
-            Console.WriteLine("5: Run Step5_Cosmos_Agent example (using AppConfiguration)");
-            Console.WriteLine("6: Run Step6_Kusto_Agent example (using AppConfiguration)");
-            Console.WriteLine("q: Quit");
+            // Kusto Agent
+            var kernel = CreateKernel();
+            kernel.Plugins.AddFromType<Step6_Kusto_Agent>("Kusto");
 
-            while (true)
+            var history = new ChatHistory();
+
+            ChatCompletionAgent agent =
+                new()
+                {
+                    Instructions = "You are an expert in KQL (Kusto Query Language).",
+                    Name = "KQLmaster",
+                    Kernel = kernel,
+                    Arguments = new KernelArguments(new OpenAIPromptExecutionSettings() { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() }),
+                };
+
+            // Respond to user input, invoking functions where appropriate.
+            await InvokeAgentAsync("Explain the schema of the table.");
+
+            // Local function to invoke agent and display the conversation messages.
+            async Task InvokeAgentAsync(string input)
             {
-                Console.Write("Enter selection: ");
-                var selection = Console.ReadLine()?.Trim();
+                ChatMessageContent message = new(AuthorRole.User, input);
+                history.Add(message);
+                this.WriteAgentChatMessage(message);
 
-                if (selection == "1")
+                await foreach (ChatMessageContent response in agent.InvokeAsync(history))
                 {
-                    var step1 = new Step1_Create_Kernel();
-                    await step1.CreateKernelAsync();
-                }
-                else if (selection == "2")
-                {
-                    var step2 = new Step2_Add_Plugins();
-                    await step2.AddPluginsAsync();
-                }
-                else if (selection == "3")
-                {
-                    var step3 = new Step3_Chat_Prompt();
-                    await step3.InvokeChatPromptAsync();
-                }
-                else if (selection == "3b")
-                {
-                    var step3_bonus = new Step3_User_Interaction_Chat_Prompt();
-                    await step3_bonus.InvokeUserInteractionChatPromptAsync();
-                }
-                else if (selection == "4")
-                {
-                    var step4 = new Step4_Chat_Agent();
-                    await step4.InvokeYodaTranslatorAsync();
-                }
-                else if (selection == "5")
-                {
-                    // Simple multi purpose Agent
-                    var kernel = CreateKernel();
-                    kernel.Plugins.AddFromType<Step5_Cosmos_Agent>("CosmosDB");
-                    var history = new ChatHistory();
-                    history.AddSystemMessage("You are an intelligent assistant that can control smart lights and analyze Cosmos DB logs. Use the tools 'SmartLighting' and 'CosmosDB' as needed.");
-                    await ProcessChatAsync(kernel, history, useRetry: false);
-                }
-                else if (selection == "6")
-                {
-                    // Kusto Agent
-                    var kernel = CreateKernel();
-                    kernel.Plugins.AddFromType<Step6_Kusto_Agent>("Kusto");
+                    chat.Add(response);
 
-                    var history = new ChatHistory();
-                    history.AddSystemMessage("You are an intelligent assistant that can analyze Kusto logs. Use the tool 'Kusto' as needed. If chat history already contains logs, reuse them. If you need, perform any custom actions on this JSON.");
-                    await ProcessChatAsync(kernel, history, useRetry: true);
-                }
-                else if (selection == "q")
-                {
-                    Console.WriteLine("Exiting...");
-                    break;
-                }
-                else
-                {
-                    Console.WriteLine("Invalid selection. Exiting.");
-                    break;
+                    this.WriteAgentChatMessage(response);
                 }
             }
         }
@@ -111,69 +75,39 @@ namespace SemanticKernelSample
             return builder.Build();
         }
 
-        private static async Task ProcessChatAsync(Kernel kernel, ChatHistory history, bool useRetry)
+
+        protected static void WriteAgentChatMessage(ChatMessageContent message)
         {
-            Console.WriteLine("Enter your message (type 'exit' to quit):");
-            string? userInput;
-            do
+            // Include ChatMessageContent.AuthorName in output, if present.
+            string authorExpression = message.Role == AuthorRole.User ? string.Empty : $" - {message.AuthorName ?? "*"}";
+            // Include TextContent (via ChatMessageContent.Content), if present.
+            string contentExpression = string.IsNullOrWhiteSpace(message.Content) ? string.Empty : message.Content;
+            Console.WriteLine($"\n# {message.Role}{authorExpression}:{contentExpression}");
+
+            // Provide visibility for inner content (that isn't TextContent).
+            foreach (KernelContent item in message.Items)
             {
-                Console.Write("User > ");
-                userInput = Console.ReadLine();
-                if (string.IsNullOrWhiteSpace(userInput) || userInput.Equals("exit", StringComparison.OrdinalIgnoreCase))
-                    break;
-
-                history.AddUserMessage(userInput);
-                var chatCompletionService = kernel.Services.GetRequiredService<IChatCompletionService>();
-
-                ChatMessageContent? result = useRetry ? 
-                    await ExecuteWithRetryAsync(chatCompletionService, history, kernel) :
-                    await chatCompletionService.GetChatMessageContentAsync(history, new OpenAIPromptExecutionSettings
-                    {
-                        FunctionChoiceBehavior = FunctionChoiceBehavior.Auto()
-                    }, kernel);
-
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine("Assistant > " + result);
-                Console.ResetColor();
-
-                if (result != null)
+                if (item is AnnotationContent annotation)
                 {
-                    history.AddMessage(result.Role, result.Content ?? string.Empty);
+                    Console.WriteLine($"  [{item.GetType().Name}] {annotation.Quote}: File #{annotation.FileId}");
                 }
-
-            } while (true);
-            Console.WriteLine("Exiting agent. Press any key to close...");
-            Console.ReadKey();
-        }
-
-        private static async Task<ChatMessageContent?> ExecuteWithRetryAsync(IChatCompletionService chatCompletionService, ChatHistory history, Kernel kernel)
-        {
-            int maxRetries = 3;
-            int currentRetry = 0;
-
-            while (true)
-            {
-                try
+                else if (item is FileReferenceContent fileReference)
                 {
-                    return await chatCompletionService.GetChatMessageContentAsync(history, new OpenAIPromptExecutionSettings
-                    {
-                        FunctionChoiceBehavior = FunctionChoiceBehavior.Auto()
-                    }, kernel);
+                    Console.WriteLine($"  [{item.GetType().Name}] File #{fileReference.FileId}");
                 }
-                catch (HttpOperationException) when (currentRetry < maxRetries)
+                else if (item is ImageContent image)
                 {
-                    currentRetry++;
-                    if (currentRetry == maxRetries)
-                    {
-                        Console.WriteLine("Can't retry anymore. Exiting.");
-                        break;
-                    }
-                    int delaySeconds = (int)Math.Pow(2, currentRetry);
-                    Console.WriteLine($"Rate limit hit. Retrying in {delaySeconds} seconds... (Attempt {currentRetry}/{maxRetries})");
-                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                    Console.WriteLine($"  [{item.GetType().Name}] {image.Uri?.ToString() ?? image.DataUri ?? $"{image.Data?.Length} bytes"}");
+                }
+                else if (item is FunctionCallContent functionCall)
+                {
+                    Console.WriteLine($"  [{item.GetType().Name}] {functionCall.Id}");
+                }
+                else if (item is FunctionResultContent functionResult)
+                {
+                    Console.WriteLine($"  [{item.GetType().Name}] {functionResult.CallId} - {functionResult.Result?.AsJson() ?? "*"}");
                 }
             }
-            return null;
         }
     }
 }
